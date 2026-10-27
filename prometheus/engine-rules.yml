@@ -1,4 +1,4 @@
-# Spark Exporter v0.1.2 canonical config: spark-exporter/prometheus/engine-rules.yml
+# Spark Exporter v0.1.3 canonical config: spark-exporter/prometheus/engine-rules.yml
 # Installed as /usr/share/spark-exporter/prometheus/engine-rules.yml.
 # Keep any vendored copy identical; there is no runtime checkout dependency.
 # Native source definitions, units, labels and version pins:

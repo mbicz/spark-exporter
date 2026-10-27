@@ -1,8 +1,13 @@
 # Spark Exporter
 
-A Prometheus exporter for the NVIDIA GB10 platform. It reads what the machine
-already exposes — the GB10 driver, the kernel's device trees, and the inference
-engines running on it — and publishes it as Prometheus text on port 9400.
+Spark Exporter publishes the telemetry a GB10 host already exposes, as
+Prometheus text on port 9400. The GB10 is one machine sold under several names —
+DGX Spark from NVIDIA, GX10 from ASUS, and rebadges from other vendors — with
+identical silicon, so one exporter covers them all. The vendor datasheet
+describes the hardware; see
+[NVIDIA's DGX Spark specifications](https://www.nvidia.com/en-us/products/workstations/dgx-spark/#m-specs).
+This project covers the software side: which sources the platform exposes, and
+what they can tell you.
 
 One Debian package installs everything. A pinned upstream node_exporter supplies
 the kernel's own counters, a small Python adapter supplies the readings
@@ -10,62 +15,18 @@ node_exporter cannot reach, and both run as unprivileged systemd services. The
 adapter merges the node counters into its own `/metrics` response, so a single
 scrape returns the whole picture.
 
+Readings come from four kinds of source. The driver publishes GPU telemetry
+through `nvidia-smi`. The kernel publishes thermal zones, per-chip hwmon sensors,
+per-policy CPU frequency, NVMe identity, interface state, RDMA counters and raw
+`ethtool -S` driver statistics. The storage stack publishes block devices and USB
+topology through sysfs. Inference engines publish their own Prometheus endpoints,
+whose contents depend on the engine rather than on the host. The exporter reads
+those sources and nothing else: it never writes to them, loads a driver or
+changes a device setting.
+
 This is a pre-1.0 release. The collectors and metric families described below
 work and are verified on real GB10 hardware, but names and semantics may change
 before 1.0. Pin a version if you depend on them.
-
-## The GB10 platform
-
-GB10 is one machine sold under several names. NVIDIA ships it as DGX Spark;
-ASUS ships it as the GX10; other vendors rebrand the same board. The enclosure,
-the badge and the default OS image differ, the silicon does not. Everything in
-this section is fixed by the platform, so an exporter written against one
-vendor's box reports the others correctly.
-
-**Compute.** A GB10 Grace Blackwell superchip pairs a 20-core Arm CPU with a
-Blackwell GPU on one package, sharing a single power budget of 140 W.
-
-- CPU: 20 Armv9 cores in two clusters, 10 Cortex-X925 and 10 Cortex-A725, one
-  thread each, no simultaneous multithreading. The platform ceiling is 2.808 GHz.
-- GPU: Blackwell architecture with fifth-generation Tensor Cores and
-  fourth-generation RT Cores, rated at 1 petaFLOP of FP4 tensor throughput with
-  sparsity. It carries one NVENC and one NVDEC engine.
-- Coupling: the CPU and GPU share one coherent memory pool rather than a discrete
-  framebuffer behind a PCIe link. The GPU appears on PCIe as a x16 device, but the
-  memory it uses is the same LPDDR5X the CPU uses.
-
-**Memory.** 128 GB of LPDDR5X on a 256-bit interface, 273 GB/s of bandwidth,
-coherent between CPU and GPU. There is no separate VRAM figure to report: a
-model resident on the GPU occupies the same pool the kernel allocates from, so
-GPU memory and system memory are two views of one budget.
-
-**Storage.** One M.2 NVMe slot, PCIe 4.0 x4. Factory units ship a 4 TB drive with
-self-encryption; the drive in a given box is whatever the vendor fitted.
-
-**Fabric.** A ConnectX-7 appears as four `mlx5` PCI functions across two PCI
-domains, giving two network interfaces and two RDMA devices per domain. Each of
-the two 200-gigabit ports connects one GB10 directly to another, which is how a
-pair reaches the 405-billion-parameter working set. The card sits on PCIe 4.0 x4.
-A separate Realtek RTL8127 provides a 10-gigabit RJ-45 port, and a MediaTek
-MT7925 provides Wi-Fi 7 and Bluetooth 5.4.
-
-**I/O.** Four USB-C ports, one HDMI 2.1a output, and DisplayPort alt mode over
-USB-C. The USB controllers present six USB 2.0 and six USB 3.x root hub pairs to
-the kernel, which is how the four physical ports and their internal devices are
-wired.
-
-**Thermals.** The platform exposes seven ACPI thermal zones for the board, one
-hwmon chip per NVMe drive, one per `mlx5` ASIC, and one for the MediaTek radio.
-Sensor naming and count come from the board firmware and the kernel drivers, so
-they are stable per platform revision.
-
-**Physical.** 150 × 150 × 50.5 mm, 1.2 kg, a 240 W external supply, and a fan
-curve declared at 19 dB(A) idle and 35 dB(A) under maximum GPU stress.
-
-The exporter reads this hardware through `nvidia-smi`, `/sys/class/thermal`,
-`/sys/class/hwmon`, `/sys/class/net`, `/sys/class/infiniband`, `/sys/block` and
-`/sys/bus/usb`. It never writes to them, never loads a driver and never changes a
-device setting.
 
 ## What it reports
 
@@ -116,7 +77,7 @@ the cumulative counter and leaves `rate()` to the query.
 ## Install
 
 ```sh
-sudo apt install ./spark-exporter_0.1.2-1_arm64.deb   # or _amd64.deb on x86-64
+sudo apt install ./spark-exporter_0.1.3-1_arm64.deb   # or _amd64.deb on x86-64
 sudo systemctl enable --now spark-exporter.service
 curl --fail http://127.0.0.1:9400/metrics
 ```
@@ -448,7 +409,7 @@ The build itself runs offline and the package ships those bytes untouched.
 `NODE_EXPORTER_ARCHIVE=/path/to/tarball` prepares from a local archive.
 
 The artifact lands in the parent directory as
-`spark-exporter_0.1.2-1_arm64.deb`. The bundled binary is architecture-specific,
+`spark-exporter_0.1.3-1_arm64.deb`. The bundled binary is architecture-specific,
 so build on the target architecture or in a configured cross-build environment.
 
 ## Tests

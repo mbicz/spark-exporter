@@ -1,9 +1,10 @@
-spark-exporter (0.1.2-1) unstable; urgency=medium
+spark-exporter (0.1.3-1) unstable; urgency=medium
 
-  * Rewrite the README as an introduction to the GB10 platform: the compute,
-    memory, storage, fabric, I/O and thermal layout that every DGX Spark, GX10
-    and other GB10 rebadge shares, followed by what the exporter reads from it.
-  * State link rates in bits per second with SI prefixes.
+  * README: drop the platform hardware summary and link the vendor datasheet
+    instead. Lead with what the project is and which software sources a GB10
+    exposes, rather than restating specifications.
+  * Release workflow is manual only. Tagging no longer publishes; dispatch it
+    with an existing tag once the tree is ready.
 
- -- Michal Bicz <2608098+mbicz@users.noreply.github.com>  Tue, 27 Oct 2026 14:10:00 -0700
+ -- Michal Bicz <2608098+mbicz@users.noreply.github.com>  Tue, 27 Oct 2026 14:55:00 -0700
 
