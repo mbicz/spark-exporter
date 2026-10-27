@@ -1,0 +1,135 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  verify-version:
+    name: Check the tag matches debian/changelog
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare tag and changelog version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          # debian/changelog carries a Debian revision; the tag names the
+          # upstream version only.
+          changelog=$(dpkg-parsechangelog --show-field Version)
+          upstream="${changelog%-*}"
+          echo "tag=$tag changelog=$changelog upstream=$upstream"
+          if [ "$tag" != "$upstream" ]; then
+            echo "::error::tag $tag does not match upstream version $upstream"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.arch }} package
+    needs: verify-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential debhelper dh-python dpkg-dev python3-all
+      - name: Prepare the pinned node_exporter
+        run: make vendor DEB_HOST_ARCH=${{ matrix.arch }}
+      - name: Build
+        run: dpkg-buildpackage -us -uc -b
+      - name: Verify the artifact contents
+        run: |
+          deb=$(ls ../spark-exporter_*_${{ matrix.arch }}.deb | head -1)
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          dpkg-deb --contents "$deb" | grep -q 'usr/lib/spark-exporter/node_exporter'
+          dpkg-deb --contents "$deb" | grep -q 'usr/share/spark-exporter/prometheus/engine-rules.yml'
+      - name: Install and smoke the services
+        run: |
+          sudo apt-get install --yes "./$(ls ../spark-exporter_*_${{ matrix.arch }}.deb | head -1)"
+          sudo systemctl daemon-reload
+          sudo systemctl start spark-node-exporter.service
+          sudo systemctl start spark-exporter.service
+          for _ in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:9400/metrics > /tmp/metrics.txt && break
+            sleep 1
+          done
+          grep -q '^spark_host_info' /tmp/metrics.txt
+          grep -q 'spark_collector_success{collector="block_devices"} 1' /tmp/metrics.txt
+          grep -q 'spark_collector_success{collector="usb"} 1' /tmp/metrics.txt
+          grep -q '^node_' /tmp/metrics.txt
+          systemctl is-active spark-exporter.service
+          systemctl is-active spark-node-exporter.service
+      - name: Purge and confirm cleanup
+        run: |
+          sudo apt-get purge --yes spark-exporter
+          test ! -e /usr/lib/spark-exporter
+          test ! -e /etc/default/spark-exporter
+      - name: Collect the artifact into the workspace
+        run: |
+          mkdir -p dist
+          cp ../spark-exporter_*_${{ matrix.arch }}.deb ../spark-exporter_*_${{ matrix.arch }}.buildinfo dist/
+          (cd dist && sha256sum *.deb > "SHA256SUMS.${{ matrix.arch }}")
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spark-exporter-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Assemble checksums
+        run: |
+          cd dist
+          ls -l
+          cat SHA256SUMS.* > SHA256SUMS
+          rm SHA256SUMS.amd64 SHA256SUMS.arm64
+          sha256sum --check SHA256SUMS
+      - name: Extract the release notes
+        run: |
+          version=$(dpkg-parsechangelog --show-field Version)
+          version="${version%-*}"
+          echo "version=$version" >> "$GITHUB_ENV"
+          awk '/^spark-exporter \(/{n++} n==1' debian/changelog \
+            | sed -n '/^  \* /,/^ -- /p' | sed '$d' > notes.txt
+          cat notes.txt
+      - name: Mark 0.x releases as prereleases
+        run: |
+          case "${{ env.version }}" in
+            0.*) echo "prerelease=true" >> "$GITHUB_ENV" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_ENV" ;;
+          esac
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Spark Exporter ${{ env.version }}
+          body_path: notes.txt
+          prerelease: ${{ env.prerelease == 'true' }}
+          files: |
+            dist/*.deb
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
