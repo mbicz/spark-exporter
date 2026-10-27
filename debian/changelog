@@ -1,0 +1,30 @@
+spark-exporter (0.1.0-1) unstable; urgency=medium
+
+  * First public release. Pre-1.0: the metric families below are usable, but
+    names and semantics may still change before 1.0.
+  * Bundled, checksum-pinned node_exporter 1.12.1 on a private loopback
+    listener, merged into the exporter's own /metrics response.
+  * GPU telemetry from nvidia-smi: supported-field detection, temperatures and
+    limits, power, every clock domain, PCIe generation and width, replay and
+    ECC counters, throttle state and accumulated throttle durations, process
+    memory, and driver/CUDA/VBIOS identity. Unsupported fields are absent and
+    flagged, never zero.
+  * Host telemetry: memory pressure, thermal zones, per-chip hwmon sensors with
+    limits, per-policy CPU frequency and governor, NVMe identity.
+  * Fabric telemetry: physical NIC negotiation, PCIe link, kernel error and
+    drop counters, raw RDMA counters with units, raw ethtool driver statistics.
+  * Storage telemetry: physical block devices with transport, size, rotation,
+    removable flag and kernel identity; USB devices with port path, identifiers
+    and negotiated speed; mounts on USB or removable media with transport
+    attribution.
+  * Passive inference telemetry: bounded loopback discovery, byte-preserved
+    proxy, normalized token rates, queue depth, cache occupancy, latency means
+    and speculative acceptance, plus recording rules.
+  * Optional model-supervisor lane accounting behind --enable-supervisor.
+  * Training-framework telemetry is documented in docs/training-telemetry.md;
+    no training collector is implemented yet.
+  * Continuous integration runs the suite on x86-64 and arm64, then builds,
+    installs, scrapes and purges the Debian package.
+
+ -- Michal Bicz <mbicz@users.noreply.github.com>  Mon, 26 Oct 2026 21:45:00 -0700
+

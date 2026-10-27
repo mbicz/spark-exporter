@@ -1,0 +1,30 @@
+[Unit]
+Description=Read-only Spark hardware and optional inference metrics exporter
+After=network-online.target tailscaled.service spark-node-exporter.service
+Wants=network-online.target spark-node-exporter.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/default/spark-exporter
+ExecStart=/usr/bin/spark-exporter $SPARK_EXPORTER_ARGS
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadOnlyPaths=/proc /sys
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+UMask=0077
+# Keep /dev/nvidia* visible for the existing driver's unprivileged nvidia-smi.
+# Do not enable PrivateDevices or grant access to a Docker socket.
+
+[Install]
+WantedBy=multi-user.target

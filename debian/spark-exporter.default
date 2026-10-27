@@ -1,0 +1,6 @@
+# Arguments are expanded by systemd, not evaluated by a shell.
+# Listen on one concrete IPv4 address, or use --listen-address tailscale.
+# Baseline host metrics come from the bundled loopback-only node_exporter.
+# Inference discovery uses bounded passive loopback GETs, never completions.
+# Supervisor status remains disabled unless --enable-supervisor is added.
+SPARK_EXPORTER_ARGS="--listen-address 127.0.0.1 --node-exporter-url http://127.0.0.1:19100/metrics --enable-inference"

@@ -1,0 +1,122 @@
+# Spark Exporter v0.1.0 canonical config: spark-exporter/prometheus/engine-rules.yml
+# Installed as /usr/share/spark-exporter/prometheus/engine-rules.yml.
+# Keep any vendored copy identical; there is no runtime checkout dependency.
+# Native source definitions, units, labels and version pins:
+# https://github.com/mbicz/spark-exporter/blob/main/docs/inference-engines.md
+# Rate each counter BEFORE summing independent workers/request partitions.
+# Only prometheus_replica denotes duplicate scrapes; native worker labels do not.
+# Never merge endpoints or invent a model label when the engine has none.
+groups:
+  - name: spark-engine-throughput
+    rules:
+      - record: spark:engine_input_tokens:rate5m
+        labels:
+          engine: vllm
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(vllm:prompt_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_output_tokens:rate5m
+        labels:
+          engine: vllm
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(vllm:generation_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_input_tokens:rate5m
+        labels:
+          engine: sglang
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(sglang:prompt_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_output_tokens:rate5m
+        labels:
+          engine: sglang
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(sglang:generation_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_input_tokens:rate5m
+        labels:
+          engine: llamacpp
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(llamacpp:prompt_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_output_tokens:rate5m
+        labels:
+          engine: llamacpp
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(llamacpp:tokens_predicted_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_input_tokens:rate5m
+        labels:
+          engine: tensorrt-llm
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(trtllm_prompt_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_output_tokens:rate5m
+        labels:
+          engine: tensorrt-llm
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(trtllm_generation_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      # These histogram SUMS accumulate tokens; their COUNTS count requests.
+      - record: spark:engine_input_tokens:rate5m
+        labels:
+          engine: triton-tensorrt-llm
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            label_replace(label_replace(
+              max without (prometheus_replica) (
+                rate(nv_llm_input_token_len_sum{job="spark-inference",response_metric_type="total_input_tokens"}[5m])
+              ), "model_name", "$1", "model", "(.+)"), "model_version", "$1", "version", "(.+)")
+          )
+      - record: spark:engine_output_tokens:rate5m
+        labels:
+          engine: triton-tensorrt-llm
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            label_replace(label_replace(
+              max without (prometheus_replica) (
+                rate(nv_llm_output_token_len_sum{job="spark-inference",response_metric_type="total_output_tokens"}[5m])
+              ), "model_name", "$1", "model", "(.+)"), "model_version", "$1", "version", "(.+)")
+          )
+      - record: spark:engine_input_tokens:rate5m
+        labels:
+          engine: tensorfold
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(tensorfold:prompt_tokens_total{job="spark-inference"}[5m])
+            )
+          )
+      - record: spark:engine_output_tokens:rate5m
+        labels:
+          engine: tensorfold
+        expr: |
+          sum by (cluster, instance, engine_port, model_name, model_version, engine_type) (
+            max without (prometheus_replica) (
+              rate(tensorfold:generation_tokens_total{job="spark-inference"}[5m])
+            )
+          )

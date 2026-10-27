@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+/debian/.debhelper/
+/debian/.debhelper-build-stamp
+/debian/debhelper-build-stamp
+/debian/files
+/debian/spark-exporter/
+/debian/*.debhelper
+/debian/*.debhelper.log
+/debian/*.substvars
+*.deb
+*.buildinfo
+*.changes
+/vendor/

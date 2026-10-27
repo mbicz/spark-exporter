@@ -1,0 +1,22 @@
+Source: spark-exporter
+Section: admin
+Priority: optional
+Maintainer: Michal Bicz <mbicz@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), dh-python, python3-all
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+X-Python3-Version: >= 3.9
+
+Package: spark-exporter
+Architecture: any
+Depends: ${misc:Depends}, ${python3:Depends}, python3 (>= 3.9), ethtool, systemd
+Suggests: nvidia-smi, tailscale
+Description: read-only Spark host, GPU, network and inference metrics exporter
+ Bundles an isolated, loopback-only Prometheus node_exporter for standard host
+ metrics and adds GPU, process, unified-memory, RDMA and Ethernet diagnostics.
+ The inference metrics proxy uses bounded passive loopback requests; model
+ supervisor status remains opt-in.
+ .
+ The main service listens on 127.0.0.1:9400 by default. No container runtime,
+ frontend, inference service or NVIDIA driver installation is required.
+ NVIDIA metrics use nvidia-smi from an already installed driver, if present.

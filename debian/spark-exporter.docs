@@ -1,0 +1,2 @@
+vendor/linux-${DEB_HOST_ARCH}/LICENSE.node_exporter
+vendor/linux-${DEB_HOST_ARCH}/NOTICE.node_exporter

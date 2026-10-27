@@ -1,0 +1,31 @@
+[Unit]
+Description=Private loopback-only Spark baseline host metrics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/lib/spark-exporter/node_exporter --web.listen-address=127.0.0.1:19100 --collector.ethtool --collector.processes --collector.interrupts
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+# Override DynamicUser's implicit mount restrictions to retain host filesystem
+# visibility and correct filesystem read-only flags.
+ProtectSystem=no
+ProtectHome=no
+PrivateTmp=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadOnlyPaths=/proc /sys
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+UMask=0077
+# Keep host proc/sys and device inventories visible; do not enable ProtectProc
+# or PrivateDevices, and do not isolate the PID namespace.
+
+[Install]
+WantedBy=multi-user.target

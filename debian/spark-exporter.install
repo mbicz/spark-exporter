@@ -1,0 +1,5 @@
+spark_exporter.py usr/lib/spark-exporter
+debian/bin/spark-exporter usr/bin
+vendor/linux-${DEB_HOST_ARCH}/node_exporter usr/lib/spark-exporter
+debian/systemd/*.service lib/systemd/system
+prometheus/engine-rules.yml usr/share/spark-exporter/prometheus
