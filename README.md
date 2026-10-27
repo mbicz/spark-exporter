@@ -16,22 +16,27 @@ This is a pre-1.0 release. The collectors, the package layout and the metric
 families described below work and are verified on real GB10 hardware, but names
 and semantics may still change before 1.0. Pin a version if you depend on them.
 
-## Why it exists
+## What it reports
 
-The GB10 driver answers `N/A` for framebuffer size, memory clocks, power limits
-and several other fields. A collector that turns those into zeros produces
-numbers that look measured. Spark Exporter omits the sample and sets
-`spark_gpu_field_supported{field=...}` to 0, so a gap stays visible as a gap.
-The same rule applies everywhere: an absent counter is absent, not zero.
+Each `spark_*` family states one reading from one source. The family name carries
+the unit, so `spark_gpu_temperature_celsius` is degrees Celsius and
+`spark_gpu_clock_sm_hertz` is hertz. Fabric counters keep their native unit in a
+`unit` label: `port_rcv_data` counts four-byte words, labelled `unit="4_bytes"`,
+and driver pause counters are gauges labelled `unit="raw"`.
 
-Fabric telemetry needs the same care. `port_rcv_data` counts four-byte words, not
-bytes, and driver pause counters are gauges, not monotonic counters. The exporter
-reports the raw value with its unit and leaves the arithmetic to Prometheus.
+A family appears in a scrape only when its source produced a value. The GB10
+driver returns `N/A` for framebuffer size, memory clocks and several power
+limits, so those samples are missing from that host's output while
+`spark_gpu_field_supported{field="memory_total_bytes"}` is 0. A reading of 0
+means the source reported 0, which is how the driver describes an idle GPU.
+
+Rates belong to Prometheus, which sees consecutive scrapes. The exporter reports
+the cumulative counter and leaves `rate()` to the query.
 
 ## Install
 
 ```sh
-sudo apt install ./spark-exporter_0.1.0-1_arm64.deb   # or _amd64.deb on x86-64
+sudo apt install ./spark-exporter_0.1.1-1_arm64.deb   # or _amd64.deb on x86-64
 sudo systemctl enable --now spark-exporter.service
 curl --fail http://127.0.0.1:9400/metrics
 ```
@@ -176,11 +181,12 @@ a mountpoint.
 
 ## How readings are reported
 
-Every scrape is a fresh observation. A collector that fails contributes nothing
-but a zero in `spark_collector_success`, and the values it would have reported
-are absent rather than stale. RDMA reads that partly fail keep their valid
-samples and count the failures. `spark_collector_last_success_timestamp_seconds`
-records the last good observation in the current process; zero means none yet.
+Every scrape is a fresh observation. A collector that fails emits no values and
+sets `spark_collector_success{collector=...}` to 0 for that scrape. RDMA reads
+that partly fail keep their valid samples and count the failures in
+`spark_rdma_read_errors`. `spark_collector_last_success_timestamp_seconds`
+records the last successful observation in the current process, and 0 means none
+yet.
 
 Advertised link rates are capacity, not traffic. PCIe `GT/s` counts transfers
 and ignores encoding overhead. `ethtool` statistics are exported as a gauge
@@ -299,7 +305,7 @@ keep upstream names and semantics.
 | `spark_gpu_power_requested_limit_watts` | `gpu`, `uuid` |
 | `spark_gpu_power_watts` | `gpu`, `uuid`; instantaneous draw |
 | `spark_gpu_process_memory_bytes` | `pid`, `uuid`; bytes |
-| `spark_gpu_process_memory_supported` | `pid`, `uuid`; 0 when the driver reports N/A |
+| `spark_gpu_process_memory_supported` | `pid`, `uuid`; 1 when the driver reports bytes for this process |
 | `spark_gpu_pstate` | `gpu`, `uuid`; P0 is 0 |
 | `spark_gpu_temperature_celsius` | `gpu`, `uuid`; degrees Celsius |
 | `spark_gpu_temperature_limit_celsius` | `gpu`, `uuid`; driver slow-down limit |
@@ -392,7 +398,7 @@ The build itself runs offline and the package ships those bytes untouched.
 `NODE_EXPORTER_ARCHIVE=/path/to/tarball` prepares from a local archive.
 
 The artifact lands in the parent directory as
-`spark-exporter_0.1.0-1_arm64.deb`. The bundled binary is architecture-specific,
+`spark-exporter_0.1.1-1_arm64.deb`. The bundled binary is architecture-specific,
 so build on the target architecture or in a configured cross-build environment.
 
 ## Tests
@@ -427,10 +433,6 @@ endpoint, and purges it to confirm cleanup.
 - [Prometheus exposition formats](https://prometheus.io/docs/instrumenting/exposition_formats/)
 - [Prometheus HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/)
 - [Debian debhelper](https://manpages.debian.org/debhelper/debhelper.7.en.html)
-
-[comparison.md](comparison.md) records how this exporter differs from
-[ateska/dgx-spark-prometheus](https://github.com/ateska/dgx-spark-prometheus),
-with pinned sources and a controlled runtime experiment.
 
 License: [MIT](LICENSE). The bundled node_exporter keeps its own Apache-2.0
 license and notices.

@@ -17,7 +17,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 MAX_RESPONSE = 32 * 1024 * 1024
 COMMON_ENGINE_PORTS = frozenset((8080, 9931, 30000))
 ENGINE_METRICS_PATHS = ("/prometheus/metrics", "/metrics")

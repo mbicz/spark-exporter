@@ -1,3 +1,13 @@
+spark-exporter (0.1.1-1) unstable; urgency=medium
+
+  * Rewrite the README's reporting section as statements of what each family
+    reports: units come from the family name or a unit label, a family appears
+    only when its source produced a value, and spark_gpu_field_supported marks
+    a field the driver does not provide.
+  * Drop the comparison document; the README stands on its own description.
+
+ -- Michal Bicz <mbicz@users.noreply.github.com>  Mon, 26 Oct 2026 22:05:00 -0700
+
 spark-exporter (0.1.0-1) unstable; urgency=medium
 
   * First public release. Pre-1.0: the metric families below are usable, but
