@@ -1,34 +1,114 @@
 # Spark Exporter
 
-Spark Exporter publishes what a Spark host is doing: CPU and memory pressure,
-GPU temperature, power, clocks and throttle state, the 200 Gb fabric's link
-state and counters, attached storage and USB devices, and the throughput and
-latency of the inference engines running on it. It speaks Prometheus text over
-HTTP on port 9400.
+A Prometheus exporter for the NVIDIA GB10 platform. It reads what the machine
+already exposes — the GB10 driver, the kernel's device trees, and the inference
+engines running on it — and publishes it as Prometheus text on port 9400.
 
-One Debian package installs everything it needs. A pinned upstream node_exporter
-supplies the kernel's own counters; a small Python adapter supplies the readings
-node_exporter cannot reach. Both run as unprivileged systemd services, and the
-adapter merges the node counters into its own `/metrics` response, so one scrape
-returns the whole picture.
+One Debian package installs everything. A pinned upstream node_exporter supplies
+the kernel's own counters, a small Python adapter supplies the readings
+node_exporter cannot reach, and both run as unprivileged systemd services. The
+adapter merges the node counters into its own `/metrics` response, so a single
+scrape returns the whole picture.
 
-This is a pre-1.0 release. The collectors, the package layout and the metric
-families described below work and are verified on real GB10 hardware, but names
-and semantics may still change before 1.0. Pin a version if you depend on them.
+This is a pre-1.0 release. The collectors and metric families described below
+work and are verified on real GB10 hardware, but names and semantics may change
+before 1.0. Pin a version if you depend on them.
+
+## The GB10 platform
+
+GB10 is one machine sold under several names. NVIDIA ships it as DGX Spark;
+ASUS ships it as the GX10; other vendors rebrand the same board. The enclosure,
+the badge and the default OS image differ, the silicon does not. Everything in
+this section is fixed by the platform, so an exporter written against one
+vendor's box reports the others correctly.
+
+**Compute.** A GB10 Grace Blackwell superchip pairs a 20-core Arm CPU with a
+Blackwell GPU on one package, sharing a single power budget of 140 W.
+
+- CPU: 20 Armv9 cores in two clusters, 10 Cortex-X925 and 10 Cortex-A725, one
+  thread each, no simultaneous multithreading. The platform ceiling is 2.808 GHz.
+- GPU: Blackwell architecture with fifth-generation Tensor Cores and
+  fourth-generation RT Cores, rated at 1 petaFLOP of FP4 tensor throughput with
+  sparsity. It carries one NVENC and one NVDEC engine.
+- Coupling: the CPU and GPU share one coherent memory pool rather than a discrete
+  framebuffer behind a PCIe link. The GPU appears on PCIe as a x16 device, but the
+  memory it uses is the same LPDDR5X the CPU uses.
+
+**Memory.** 128 GB of LPDDR5X on a 256-bit interface, 273 GB/s of bandwidth,
+coherent between CPU and GPU. There is no separate VRAM figure to report: a
+model resident on the GPU occupies the same pool the kernel allocates from, so
+GPU memory and system memory are two views of one budget.
+
+**Storage.** One M.2 NVMe slot, PCIe 4.0 x4. Factory units ship a 4 TB drive with
+self-encryption; the drive in a given box is whatever the vendor fitted.
+
+**Fabric.** A ConnectX-7 appears as four `mlx5` PCI functions across two PCI
+domains, giving two network interfaces and two RDMA devices per domain. Each of
+the two 200-gigabit ports connects one GB10 directly to another, which is how a
+pair reaches the 405-billion-parameter working set. The card sits on PCIe 4.0 x4.
+A separate Realtek RTL8127 provides a 10-gigabit RJ-45 port, and a MediaTek
+MT7925 provides Wi-Fi 7 and Bluetooth 5.4.
+
+**I/O.** Four USB-C ports, one HDMI 2.1a output, and DisplayPort alt mode over
+USB-C. The USB controllers present six USB 2.0 and six USB 3.x root hub pairs to
+the kernel, which is how the four physical ports and their internal devices are
+wired.
+
+**Thermals.** The platform exposes seven ACPI thermal zones for the board, one
+hwmon chip per NVMe drive, one per `mlx5` ASIC, and one for the MediaTek radio.
+Sensor naming and count come from the board firmware and the kernel drivers, so
+they are stable per platform revision.
+
+**Physical.** 150 × 150 × 50.5 mm, 1.2 kg, a 240 W external supply, and a fan
+curve declared at 19 dB(A) idle and 35 dB(A) under maximum GPU stress.
+
+The exporter reads this hardware through `nvidia-smi`, `/sys/class/thermal`,
+`/sys/class/hwmon`, `/sys/class/net`, `/sys/class/infiniband`, `/sys/block` and
+`/sys/bus/usb`. It never writes to them, never loads a driver and never changes a
+device setting.
 
 ## What it reports
 
-Each `spark_*` family states one reading from one source. The family name carries
-the unit, so `spark_gpu_temperature_celsius` is degrees Celsius and
+**GPU.** Temperature and its limit, memory temperature, power draw against its
+limits, every clock domain and its ceiling, PCIe generation and width, replay and
+ECC counters, the active throttle reasons and the time the driver has spent
+throttled for each one, per-process memory, and driver/CUDA/VBIOS identity.
+
+**Host.** Memory pressure, per-zone thermal readings, per-chip hwmon sensors with
+their critical and maximum limits, per-policy CPU frequency and governor, and
+NVMe controller identity.
+
+**Fabric.** Negotiated link speed, carrier, MTU, duplex, operational state and
+PCIe width for every physical interface; kernel error, drop, collision and CRC
+counters; raw RDMA state, rate and every readable counter with its unit; and the
+complete `ethtool -S` driver statistics, including per-priority pause, CNP and
+ECN counters.
+
+**Storage.** Every physical block device with its transport, size, rotation and
+the identity attributes the kernel publishes; every USB device with its port
+path, vendor and product identifiers, and negotiated speed; and every mount on
+USB or removable media, tagged with its transport.
+
+**Inference.** A bounded, read-only proxy for the metrics an engine already
+serves, plus normalized token rates, queue depth, cache occupancy, latency means
+and speculative-decode acceptance.
+
+**Model supervisor.** Optional lane accounting: readiness, leases, declared
+memory, admission budget, port, priority, elapsed time and fences.
+
+## What a reading means
+
+Each `spark_*` family states one reading from one source. The unit is in the
+family name, so `spark_gpu_temperature_celsius` is degrees Celsius and
 `spark_gpu_clock_sm_hertz` is hertz. Fabric counters keep their native unit in a
-`unit` label: `port_rcv_data` counts four-byte words, labelled `unit="4_bytes"`,
-and driver pause counters are gauges labelled `unit="raw"`.
+`unit` label: `port_rcv_data` counts four-byte words and is labelled
+`unit="4_bytes"`, while driver pause counters are gauges labelled `unit="raw"`.
 
 A family appears in a scrape only when its source produced a value. The GB10
-driver returns `N/A` for framebuffer size, memory clocks and several power
-limits, so those samples are missing from that host's output while
-`spark_gpu_field_supported{field="memory_total_bytes"}` is 0. A reading of 0
-means the source reported 0, which is how the driver describes an idle GPU.
+driver returns `N/A` for framebuffer size, memory clocks and power limits, so
+those samples are missing from a GB10 host's output while
+`spark_gpu_field_supported{field="memory_total_bytes"}` is 0. A reading of 0 means
+the source reported 0, which is how the driver describes an idle GPU.
 
 Rates belong to Prometheus, which sees consecutive scrapes. The exporter reports
 the cumulative counter and leaves `rate()` to the query.
@@ -36,16 +116,16 @@ the cumulative counter and leaves `rate()` to the query.
 ## Install
 
 ```sh
-sudo apt install ./spark-exporter_0.1.1-1_arm64.deb   # or _amd64.deb on x86-64
+sudo apt install ./spark-exporter_0.1.2-1_arm64.deb   # or _amd64.deb on x86-64
 sudo systemctl enable --now spark-exporter.service
 curl --fail http://127.0.0.1:9400/metrics
 ```
 
-The package depends on Python 3.9+, `ethtool` and `systemd`. The adapter uses
+The package depends on Python 3.9+, `ethtool` and `systemd`; the adapter uses
 only the Python standard library. GPU readings come from the `nvidia-smi` that
-ships with your installed driver; the package never installs, replaces or
-restarts a driver. Without a driver the GPU collector reports failure and the
-host, NIC, storage and RDMA collectors keep working.
+ships with your installed driver, and the package never installs, replaces or
+restarts a driver. Without a driver the GPU collector reports failure and every
+other collector keeps working.
 
 `spark-exporter.service` listens on `127.0.0.1:9400`.
 `spark-node-exporter.service` listens on `127.0.0.1:19100` and is reachable only
@@ -59,15 +139,16 @@ Edit `/etc/default/spark-exporter`. The default line is:
 SPARK_EXPORTER_ARGS="--listen-address 127.0.0.1 --node-exporter-url http://127.0.0.1:19100/metrics --enable-inference"
 ```
 
-To serve the host's Tailscale address and read the model supervisor's lane accounting:
+To serve the host's Tailscale address and read the model supervisor's lane
+accounting:
 
 ```sh
 SPARK_EXPORTER_ARGS="--listen-address tailscale --node-exporter-url http://127.0.0.1:19100/metrics --enable-supervisor --enable-inference"
 ```
 
-`tailscale ip -4` is resolved once at startup. A concrete IPv4 literal works
-too. The listener must be a single address; the kernel has to permit the bind.
-Restart the service after editing:
+`tailscale ip -4` is resolved once at startup, and a concrete IPv4 literal works
+too. The listener must be a single address the kernel permits binding. Restart
+the service after editing:
 
 ```sh
 sudo systemctl restart spark-exporter.service
@@ -80,13 +161,13 @@ names, GPU identifiers and storage serial numbers appear in the output.
 ## Endpoints
 
 `GET /metrics` returns hardware, fabric and engine statistics in Prometheus text.
-`spark_host_info{architecture=...,version=...} 1` identifies the exporter; its
-`architecture` is the kernel's `platform.machine()`.
+`spark_host_info{architecture=...,version=...} 1` identifies the exporter, with
+`architecture` taken from the kernel's `platform.machine()`.
 
 `GET /targets` returns a Prometheus HTTP service-discovery array for the
 inference endpoints that currently answer with valid metrics. It is empty when
-inference discovery is off. Targets point at this exporter's own address and
-port 9400, with the upstream engine reached through a loopback proxy:
+inference discovery is off. Targets point at this exporter's own address and port
+9400, with the upstream engine reached through a loopback proxy:
 
 ```json
 [{"targets":["100.100.1.2:9400"],"labels":{"__metrics_path__":"/inference/8007/metrics","engine_port":"8007"}}]
@@ -98,17 +179,18 @@ model labels. The first scrape after the exporter starts has no rate yet; the
 second one does.
 
 Discovery looks at the bounded port range 8000–8031 plus the common engine ports
-8080, 9931 and 30000, and at `PORT=` assignments in `/etc/spark-exporter/lanes.d/*.conf`
-when supervisor integration is enabled. Configuration files are read, never executed.
-`--engine-endpoint PORT:PATH` pins one port to `/metrics` or `/prometheus/metrics`
-for engines whose OpenAPI schema cannot be inspected.
+8080, 9931 and 30000, and at `PORT=` assignments in
+`/etc/spark-exporter/lanes.d/*.conf` when supervisor integration is enabled.
+Configuration files are read, never executed. `--engine-endpoint PORT:PATH` pins
+one port to `/metrics` or `/prometheus/metrics` for engines whose OpenAPI schema
+cannot be inspected.
 
 TensorRT-LLM needs `return_perf_metrics: true` for `/prometheus/metrics` to
 exist. Its plain `/metrics` is a JSON diagnostics endpoint that consumes
 iteration-statistics queue entries when polled, so the exporter reads
 `/openapi.json` before falling back and refuses a route advertised as JSON
-diagnostics. Authenticated engines must expose metrics without a key, for
-example TensorFold's `--metrics-open`; the exporter never forwards credentials.
+diagnostics. Authenticated engines must expose metrics without a key, for example
+TensorFold's `--metrics-open`; the exporter never forwards credentials.
 
 ## Inference statistics
 
@@ -126,10 +208,10 @@ engine endpoint alongside the raw native families:
 | `spark_engine_mtp_draft_tokens_total`, `_accepted_tokens_total` | Speculative decoding, where the engine counts it |
 | `spark_engine_speculation_acceptance_ratio` | Accepted divided by drafted |
 
-Rates are computed from the exporter's own observation interval, so a restart
-produces a reset counter rather than a spike. Percentiles stay in Prometheus,
-where the buckets are; `mean` is the true mean of observed requests and is never
-presented as a percentile.
+Rates come from the exporter's own observation interval, so a restart produces a
+reset counter rather than a spike. Percentiles stay in Prometheus, where the
+buckets are; `mean` is the true mean of observed requests and is never presented
+as a percentile.
 
 The exact counter families, engine prerequisites and pinned sources are in
 [native inference engines](docs/inference-engines.md). The canonical recording
@@ -141,43 +223,11 @@ Prometheus you own.
 
 Training frameworks are documented separately in
 [training telemetry](docs/training-telemetry.md). Ray Train, Kubeflow's training
-operator, MLflow and Determined expose Prometheus endpoints with job-lifecycle
-or server metrics; none of them expose per-step loss through a passive standard
-endpoint, and Unsloth's Studio reports JSON under an authenticated session. The
-exporter collects category-one endpoints only, and that collector is not yet
-implemented.
-
-## Host detail
-
-Beyond node_exporter's standard collectors, the adapter reports:
-
-- GPU temperature, its limit and slow/max thresholds, memory temperature, power
-  with limits and averages, every clock domain and its maximum, PCIe generation
-  and width, replay counters, ECC aggregates, and per-reason throttle durations
-  accumulated by the driver. Driver, CUDA, VBIOS, part, board and GSP firmware
-  identity are exported as labels.
-- Per-zone thermal readings and every hwmon temperature sensor with its label
-  and critical/max/min limits. Chips are labelled by PCI address, so four
-  identical `mlx5` sensors stay distinguishable.
-- CPU frequency per policy — current, configured ceiling and hardware maximum —
-  with the active governor.
-- NVMe controller model, firmware and serial.
-- Negotiated NIC speed, carrier, MTU, duplex, operational state and PCIe link
-  width/speed, plus kernel error, drop, collision and CRC counters per interface.
-- Raw RDMA state, rate, and every readable `counters/*` and `hw_counters/*`
-  value, with the unit recorded in a label.
-- Physical block devices with their transport, size, rotation and the identity
-  attributes the kernel publishes, plus every USB device with its port path,
-  vendor/product identifiers and negotiated link speed.
-- Mounts backed by USB or removable media, tagged with the transport that
-  node_exporter's `node_filesystem_*` families do not carry.
-- With `--enable-supervisor`: lane state, leases, declared memory, admission budget,
-  port, priority, elapsed time, fences and provenance from the supervisor's status.
-
-Storage capacity and I/O counters stay in node_exporter's `node_filesystem_*`
-and `node_disk_*` families. The exporter adds the attribution those families
-lack: which bus a disk sits on, whether it is removable, and which device backs
-a mountpoint.
+operator, MLflow and Determined expose Prometheus endpoints carrying
+job-lifecycle or server metrics; none of them expose per-step loss through a
+passive standard endpoint, and Unsloth's Studio reports JSON under an
+authenticated session. The exporter collects category-one endpoints only, and
+that collector is not yet implemented.
 
 ## How readings are reported
 
@@ -188,16 +238,16 @@ that partly fail keep their valid samples and count the failures in
 records the last successful observation in the current process, and 0 means none
 yet.
 
-Advertised link rates are capacity, not traffic. PCIe `GT/s` counts transfers
-and ignores encoding overhead. `ethtool` statistics are exported as a gauge
-because drivers mix counters and instantaneous values, so apply `rate()` only
-where the driver documents a monotonic counter. USB `speed` is the negotiated
+Advertised link rates are capacity, not traffic. PCIe `GT/s` counts transfers and
+ignores encoding overhead. `ethtool` statistics are exported as a gauge because
+drivers mix counters and instantaneous values, so apply `rate()` only where the
+driver documents a monotonic counter. A USB `speed` value is the negotiated
 signalling rate, not measured throughput.
 
-On GB10, system RAM and GPU memory are one physical pool. `MemAvailable` is the
-kernel's estimate of allocatable memory, and `MemTotal - MemAvailable` is a
-pressure signal rather than a measure of model residency. Per-process GPU memory
-is driver accounting, so summing it against system memory double-counts.
+On GB10, `MemAvailable` is the kernel's estimate of allocatable memory, and
+`MemTotal - MemAvailable` is a pressure signal rather than a measure of model
+residency. Per-process GPU memory is driver accounting, so summing it against
+system memory double-counts the same pool.
 
 Virtual block devices — loop, device-mapper, md, zram and optical — belong to
 their backing store and carry no bus of their own, so they are not reported as
@@ -216,169 +266,169 @@ keep upstream names and semantics.
 
 | Family | Labels and units |
 |---|---|
-| `spark_block_device_identity` | `device`, `kind`, `detail`; constant 1 |
-| `spark_block_device_info` | `device`, `transport`, `usb_path` when USB; constant 1 |
-| `spark_block_device_read_errors` | failed reads in this collection |
-| `spark_block_device_removable` | `device`; 0 or 1 |
-| `spark_block_device_rotational` | `device`; 0 or 1 |
-| `spark_block_device_size_bytes` | `device`; bytes |
-| `spark_collector_duration_seconds` | `collector` |
-| `spark_collector_last_success_timestamp_seconds` | `collector`; Unix seconds, 0 means none yet |
-| `spark_collector_success` | `collector`; 0 or 1 |
-| `spark_cpu_frequency_configured_max_hertz` | `policy`, `cpu` |
-| `spark_cpu_frequency_configured_min_hertz` | `policy`, `cpu` |
-| `spark_cpu_frequency_current_hertz` | `policy`, `cpu` |
-| `spark_cpu_frequency_governor` | `policy`, `cpu`, `governor`; current governor is 1 |
-| `spark_cpu_frequency_hardware_max_hertz` | `policy`, `cpu` |
-| `spark_cpu_read_errors` | failed reads in this collection |
-| `spark_engine_counter_reset_total` | **counter**, `engine`, `engine_port`, `model`, `direction` |
-| `spark_engine_e2e_request_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
-| `spark_engine_e2e_request_seconds_observations_total` | `engine`, `engine_port`, `model` |
-| `spark_engine_endpoint_up` | `engine`, `engine_port`, `model`; constant 1 |
-| `spark_engine_generation_tokens_running` | `engine`, `engine_port`, `model` |
-| `spark_engine_inter_token_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
-| `spark_engine_inter_token_seconds_observations_total` | `engine`, `engine_port`, `model` |
-| `spark_engine_kv_cache_usage_ratio` | `engine`, `engine_port`, `model`; 0 to 1 |
-| `spark_engine_mtp_accepted_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
-| `spark_engine_mtp_draft_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
-| `spark_engine_prefill_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
-| `spark_engine_prefill_seconds_observations_total` | `engine`, `engine_port`, `model` |
-| `spark_engine_requests_running` | `engine`, `engine_port`, `model` |
-| `spark_engine_requests_waiting` | `engine`, `engine_port`, `model` |
-| `spark_engine_spec_accepted_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
-| `spark_engine_spec_draft_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
-| `spark_engine_speculation_acceptance_ratio` | `engine`, `engine_port`, `model`; 0 to 1 |
-| `spark_engine_time_to_first_token_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
-| `spark_engine_time_to_first_token_seconds_observations_total` | `engine`, `engine_port`, `model` |
-| `spark_engine_tokens_per_second` | `engine`, `engine_port`, `model`, `direction` |
-| `spark_engine_tokens_total` | **counter**, `engine`, `engine_port`, `model`, `direction` |
-| `spark_ethtool_stat` | `device`, `stat`; raw driver value, gauge |
-| `spark_external_filesystem_info` | `device`, `mountpoint`, `fstype`, `transport`; constant 1 |
-| `spark_external_filesystem_read_errors` | failed reads in this collection |
-| `spark_external_filesystem_removable` | same labels; 0 or 1 |
-| `spark_gpu_bar1_memory_total_bytes` | `gpu`, `uuid` |
-| `spark_gpu_bar1_memory_used_bytes` | `gpu`, `uuid` |
-| `spark_gpu_c2c_mode` | `gpu`, `uuid`; 0 or 1 |
-| `spark_gpu_clock_applications_graphics_hertz` | `gpu`, `uuid` |
+| `spark_host_info` | `architecture`, `version`; constant 1 |
+| `spark_gpu_info` | `gpu`, `uuid`, `name`; constant 1 |
+| `spark_gpu_identity` | `gpu`, `uuid`, `kind`, `detail`; constant 1 |
+| `spark_gpu_field_supported` | `gpu`, `uuid`, `field`; 0 when the driver does not support the field |
+| `spark_gpu_temperature_celsius` | `gpu`, `uuid`; degrees Celsius |
+| `spark_gpu_temperature_limit_celsius` | `gpu`, `uuid`; driver slow-down limit |
+| `spark_gpu_temperature_slow_limit_celsius` | `gpu`, `uuid` |
+| `spark_gpu_temperature_max_limit_celsius` | `gpu`, `uuid` |
+| `spark_gpu_temperature_target_celsius` | `gpu`, `uuid` |
+| `spark_gpu_memory_temperature_celsius` | `gpu`, `uuid` |
+| `spark_gpu_power_watts` | `gpu`, `uuid`; instantaneous draw |
+| `spark_gpu_power_average_watts` | `gpu`, `uuid` |
+| `spark_gpu_power_limit_watts` | `gpu`, `uuid`; current limit |
+| `spark_gpu_power_requested_limit_watts` | `gpu`, `uuid` |
+| `spark_gpu_power_default_limit_watts` | `gpu`, `uuid` |
+| `spark_gpu_power_min_limit_watts` | `gpu`, `uuid` |
+| `spark_gpu_power_max_limit_watts` | `gpu`, `uuid` |
+| `spark_gpu_memory_power_watts` | `gpu`, `uuid` |
+| `spark_gpu_module_power_watts` | `gpu`, `uuid` |
 | `spark_gpu_clock_graphics_hertz` | `gpu`, `uuid` |
+| `spark_gpu_clock_sm_hertz` | `gpu`, `uuid` |
+| `spark_gpu_clock_memory_hertz` | `gpu`, `uuid` |
+| `spark_gpu_clock_video_hertz` | `gpu`, `uuid` |
+| `spark_gpu_clock_applications_graphics_hertz` | `gpu`, `uuid` |
 | `spark_gpu_clock_max_graphics_hertz` | `gpu`, `uuid` |
 | `spark_gpu_clock_max_sm_hertz` | `gpu`, `uuid` |
 | `spark_gpu_clock_max_video_hertz` | `gpu`, `uuid` |
-| `spark_gpu_clock_memory_hertz` | `gpu`, `uuid` |
-| `spark_gpu_clock_sm_hertz` | `gpu`, `uuid` |
-| `spark_gpu_clock_throttle_active` | `gpu`, `uuid`, `reason`; 0 or 1 |
-| `spark_gpu_clock_throttle_seconds_total` | **counter**, `gpu`, `uuid`, `reason`; seconds |
-| `spark_gpu_clock_video_hertz` | `gpu`, `uuid` |
-| `spark_gpu_decoder_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
-| `spark_gpu_ecc_dram_correctable_total` | **counter**, `gpu`, `uuid` |
-| `spark_gpu_ecc_dram_uncorrectable_total` | **counter**, `gpu`, `uuid` |
-| `spark_gpu_ecc_sram_correctable_total` | **counter**, `gpu`, `uuid` |
-| `spark_gpu_ecc_sram_uncorrectable_total` | **counter**, `gpu`, `uuid` |
-| `spark_gpu_encoder_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
-| `spark_gpu_field_supported` | `gpu`, `uuid`, `field`; 0 when the driver does not support the field |
-| `spark_gpu_identity` | `gpu`, `uuid`, `kind`, `detail`; constant 1 |
-| `spark_gpu_info` | `gpu`, `uuid`, `name`; constant 1 |
-| `spark_gpu_jpeg_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
-| `spark_gpu_memory_free_bytes` | `gpu`, `uuid`; framebuffer |
-| `spark_gpu_memory_power_watts` | `gpu`, `uuid` |
-| `spark_gpu_memory_reserved_bytes` | `gpu`, `uuid`; framebuffer |
-| `spark_gpu_memory_temperature_celsius` | `gpu`, `uuid` |
 | `spark_gpu_memory_total_bytes` | `gpu`, `uuid`; framebuffer |
 | `spark_gpu_memory_used_bytes` | `gpu`, `uuid`; framebuffer |
+| `spark_gpu_memory_free_bytes` | `gpu`, `uuid`; framebuffer |
+| `spark_gpu_memory_reserved_bytes` | `gpu`, `uuid`; framebuffer |
+| `spark_gpu_bar1_memory_total_bytes` | `gpu`, `uuid` |
+| `spark_gpu_bar1_memory_used_bytes` | `gpu`, `uuid` |
+| `spark_gpu_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
 | `spark_gpu_memory_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
-| `spark_gpu_module_power_watts` | `gpu`, `uuid` |
+| `spark_gpu_encoder_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
+| `spark_gpu_decoder_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
+| `spark_gpu_jpeg_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
 | `spark_gpu_ofa_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
-| `spark_gpu_pcie_device_max_generation` | `gpu`, `uuid` |
+| `spark_gpu_pstate` | `gpu`, `uuid`; P0 is 0 |
+| `spark_gpu_persistence_mode` | `gpu`, `uuid`; 0 or 1 |
+| `spark_gpu_c2c_mode` | `gpu`, `uuid`; 0 or 1 |
+| `spark_gpu_clock_throttle_active` | `gpu`, `uuid`, `reason`; 0 or 1 |
+| `spark_gpu_clock_throttle_seconds_total` | **counter**, `gpu`, `uuid`, `reason`; seconds |
 | `spark_gpu_pcie_generation` | `gpu`, `uuid`; generation number |
+| `spark_gpu_pcie_max_generation` | `gpu`, `uuid` |
+| `spark_gpu_pcie_device_max_generation` | `gpu`, `uuid` |
 | `spark_gpu_pcie_host_max_generation` | `gpu`, `uuid` |
 | `spark_gpu_pcie_link_width_lanes` | `gpu`, `uuid` |
-| `spark_gpu_pcie_max_generation` | `gpu`, `uuid` |
 | `spark_gpu_pcie_max_link_width_lanes` | `gpu`, `uuid` |
-| `spark_gpu_pcie_replay_rollover_total` | **counter**, `gpu`, `uuid` |
 | `spark_gpu_pcie_replay_total` | **counter**, `gpu`, `uuid` |
-| `spark_gpu_persistence_mode` | `gpu`, `uuid`; 0 or 1 |
-| `spark_gpu_power_average_watts` | `gpu`, `uuid` |
-| `spark_gpu_power_default_limit_watts` | `gpu`, `uuid` |
-| `spark_gpu_power_limit_watts` | `gpu`, `uuid`; current limit |
-| `spark_gpu_power_max_limit_watts` | `gpu`, `uuid` |
-| `spark_gpu_power_min_limit_watts` | `gpu`, `uuid` |
-| `spark_gpu_power_requested_limit_watts` | `gpu`, `uuid` |
-| `spark_gpu_power_watts` | `gpu`, `uuid`; instantaneous draw |
+| `spark_gpu_pcie_replay_rollover_total` | **counter**, `gpu`, `uuid` |
+| `spark_gpu_ecc_sram_correctable_total` | **counter**, `gpu`, `uuid` |
+| `spark_gpu_ecc_sram_uncorrectable_total` | **counter**, `gpu`, `uuid` |
+| `spark_gpu_ecc_dram_correctable_total` | **counter**, `gpu`, `uuid` |
+| `spark_gpu_ecc_dram_uncorrectable_total` | **counter**, `gpu`, `uuid` |
 | `spark_gpu_process_memory_bytes` | `pid`, `uuid`; bytes |
 | `spark_gpu_process_memory_supported` | `pid`, `uuid`; 1 when the driver reports bytes for this process |
-| `spark_gpu_pstate` | `gpu`, `uuid`; P0 is 0 |
-| `spark_gpu_temperature_celsius` | `gpu`, `uuid`; degrees Celsius |
-| `spark_gpu_temperature_limit_celsius` | `gpu`, `uuid`; driver slow-down limit |
-| `spark_gpu_temperature_max_limit_celsius` | `gpu`, `uuid` |
-| `spark_gpu_temperature_slow_limit_celsius` | `gpu`, `uuid` |
-| `spark_gpu_temperature_target_celsius` | `gpu`, `uuid` |
-| `spark_gpu_utilization_ratio` | `gpu`, `uuid`; 0 to 1 |
-| `spark_host_info` | `architecture`, `version`; constant 1 |
+| `spark_system_memory_total_bytes` | bytes |
+| `spark_system_memory_available_bytes` | bytes; kernel allocatable estimate |
+| `spark_system_memory_free_bytes` | bytes |
+| `spark_system_memory_unavailable_bytes` | bytes; `total - available` |
+| `spark_system_memory_buffers_bytes` | bytes |
+| `spark_system_memory_cached_bytes` | bytes |
+| `spark_system_memory_reclaimable_slab_bytes` | bytes |
+| `spark_system_memory_shared_bytes` | bytes |
+| `spark_system_memory_swap_total_bytes` | bytes |
+| `spark_system_memory_swap_free_bytes` | bytes |
+| `spark_thermal_zone_celsius` | `zone`, `type`; degrees Celsius |
 | `spark_hwmon_temperature_celsius` | `chip`, `sensor`, `label`; degrees Celsius |
 | `spark_hwmon_temperature_critical_celsius` | `chip`, `sensor`, `label` |
 | `spark_hwmon_temperature_max_celsius` | `chip`, `sensor`, `label` |
 | `spark_hwmon_temperature_min_celsius` | `chip`, `sensor`, `label` |
-| `spark_supervisor_auto_evict` | 0 or 1; opt-in |
-| `spark_supervisor_lane_draining` | `lane`, `model` |
-| `spark_supervisor_lane_elapsed_seconds` | `lane`, `model` |
-| `spark_supervisor_lane_fence_count` | `lane`, `model` |
-| `spark_supervisor_lane_identity` | `lane`, `model`, `kind`, `detail`; constant 1 |
-| `spark_supervisor_lane_leases` | `lane`, `model` |
-| `spark_supervisor_lane_memory_declared_bytes` | `lane`, `model`; declared, not measured |
-| `spark_supervisor_lane_port` | `lane`, `model` |
-| `spark_supervisor_lane_priority` | `lane`, `model` |
-| `spark_supervisor_lane_ready` | `lane`, `model`; 0 or 1 |
-| `spark_supervisor_lane_reserved` | `lane`, `model` |
-| `spark_supervisor_lane_state` | `lane`, `model`, `state`; the current state is 1 |
-| `spark_supervisor_lane_unit_check_error` | `lane`, `model` |
-| `spark_supervisor_lane_unit_found` | `lane`, `model` |
-| `spark_supervisor_leases` | lease count; opt-in |
-| `spark_supervisor_memory_budget_bytes` | admission budget; opt-in |
-| `spark_supervisor_memory_reserved_bytes` | declared reservations; opt-in |
-| `spark_supervisor_ready_alias_count` | opt-in |
-| `spark_nic_carrier` | `device`; 0 or 1 |
-| `spark_nic_collisions_total` | **counter**, `device` |
-| `spark_nic_duplex` | `device`, `state`; the current state is 1 |
-| `spark_nic_info` | `device`, plus `driver` and `bus` when readable; constant 1 |
-| `spark_nic_mtu_bytes` | `device`; bytes |
-| `spark_nic_operstate` | `device`, `state`; the current state is 1 |
-| `spark_nic_pcie_current_link_speed_transfers_per_second` | `device`; transfers/second, not payload bits |
-| `spark_nic_pcie_current_link_width_lanes` | `device` |
-| `spark_nic_pcie_max_link_speed_transfers_per_second` | `device` |
-| `spark_nic_pcie_max_link_width_lanes` | `device` |
-| `spark_nic_receive_crc_errors_total` | **counter**, `device` |
-| `spark_nic_receive_dropped_total` | **counter**, `device` |
-| `spark_nic_receive_errors_total` | **counter**, `device` |
-| `spark_nic_receive_frame_errors_total` | **counter**, `device` |
-| `spark_nic_receive_length_errors_total` | **counter**, `device` |
-| `spark_nic_receive_missed_errors_total` | **counter**, `device` |
-| `spark_nic_receive_over_errors_total` | **counter**, `device` |
-| `spark_nic_speed_bits_per_second` | `device`; negotiated bits/second |
-| `spark_nic_transmit_carrier_errors_total` | **counter**, `device` |
-| `spark_nic_transmit_dropped_total` | **counter**, `device` |
-| `spark_nic_transmit_errors_total` | **counter**, `device` |
+| `spark_thermal_read_errors` | failed reads in this collection |
+| `spark_cpu_frequency_current_hertz` | `policy`, `cpu` |
+| `spark_cpu_frequency_configured_max_hertz` | `policy`, `cpu` |
+| `spark_cpu_frequency_configured_min_hertz` | `policy`, `cpu` |
+| `spark_cpu_frequency_hardware_max_hertz` | `policy`, `cpu` |
+| `spark_cpu_frequency_governor` | `policy`, `cpu`, `governor`; current governor is 1 |
+| `spark_cpu_read_errors` | failed reads in this collection |
 | `spark_nvme_identity` | `controller`, `kind`, `detail`; constant 1 |
 | `spark_nvme_read_errors` | failed reads in this collection |
-| `spark_rdma_counter_total` | **counter**, `device`, `port`, `source`, `counter`, `unit` |
+| `spark_nic_info` | `device`, plus `driver` and `bus` when readable; constant 1 |
+| `spark_nic_speed_bits_per_second` | `device`; negotiated bits per second |
+| `spark_nic_carrier` | `device`; 0 or 1 |
+| `spark_nic_mtu_bytes` | `device`; bytes |
+| `spark_nic_operstate` | `device`, `state`; the current state is 1 |
+| `spark_nic_duplex` | `device`, `state`; the current state is 1 |
+| `spark_nic_pcie_current_link_speed_transfers_per_second` | `device`; transfers per second, not payload bits |
+| `spark_nic_pcie_max_link_speed_transfers_per_second` | `device` |
+| `spark_nic_pcie_current_link_width_lanes` | `device` |
+| `spark_nic_pcie_max_link_width_lanes` | `device` |
+| `spark_nic_receive_errors_total` | **counter**, `device` |
+| `spark_nic_transmit_errors_total` | **counter**, `device` |
+| `spark_nic_receive_dropped_total` | **counter**, `device` |
+| `spark_nic_transmit_dropped_total` | **counter**, `device` |
+| `spark_nic_collisions_total` | **counter**, `device` |
+| `spark_nic_receive_crc_errors_total` | **counter**, `device` |
+| `spark_nic_receive_frame_errors_total` | **counter**, `device` |
+| `spark_nic_receive_missed_errors_total` | **counter**, `device` |
+| `spark_nic_transmit_carrier_errors_total` | **counter**, `device` |
+| `spark_nic_receive_length_errors_total` | **counter**, `device` |
+| `spark_nic_receive_over_errors_total` | **counter**, `device` |
+| `spark_rdma_state` | `device`, `port`; 4 is ACTIVE |
 | `spark_rdma_phys_state` | `device`, `port`; 5 is LinkUp |
 | `spark_rdma_rate_bits_per_second` | `device`, `port`; advertised rate |
+| `spark_rdma_counter_total` | **counter**, `device`, `port`, `source`, `counter`, `unit` |
 | `spark_rdma_read_errors` | failed reads in this collection |
-| `spark_rdma_state` | `device`, `port`; 4 is ACTIVE |
-| `spark_system_memory_available_bytes` | bytes; kernel allocatable estimate |
-| `spark_system_memory_buffers_bytes` | bytes |
-| `spark_system_memory_cached_bytes` | bytes |
-| `spark_system_memory_free_bytes` | bytes |
-| `spark_system_memory_reclaimable_slab_bytes` | bytes |
-| `spark_system_memory_shared_bytes` | bytes |
-| `spark_system_memory_swap_free_bytes` | bytes |
-| `spark_system_memory_swap_total_bytes` | bytes |
-| `spark_system_memory_total_bytes` | bytes |
-| `spark_system_memory_unavailable_bytes` | bytes; `total - available` |
-| `spark_thermal_read_errors` | failed reads in this collection |
-| `spark_thermal_zone_celsius` | `zone`, `type`; degrees Celsius |
+| `spark_ethtool_stat` | `device`, `stat`; raw driver value, gauge |
+| `spark_block_device_info` | `device`, `transport`, `usb_path` when USB; constant 1 |
+| `spark_block_device_size_bytes` | `device`; bytes |
+| `spark_block_device_removable` | `device`; 0 or 1 |
+| `spark_block_device_rotational` | `device`; 0 or 1 |
+| `spark_block_device_identity` | `device`, `kind`, `detail`; constant 1 |
+| `spark_block_device_read_errors` | failed reads in this collection |
 | `spark_usb_device_info` | `path`, `bus`, `address`, `id_vendor`, `id_product`, plus `manufacturer`, `product`, `serial` when readable; constant 1 |
 | `spark_usb_device_speed_bits_per_second` | `path`; negotiated signalling rate |
 | `spark_usb_read_errors` | failed reads in this collection |
+| `spark_external_filesystem_info` | `device`, `mountpoint`, `fstype`, `transport`; constant 1 |
+| `spark_external_filesystem_removable` | same labels; 0 or 1 |
+| `spark_external_filesystem_read_errors` | failed reads in this collection |
+| `spark_supervisor_memory_budget_bytes` | admission budget; opt-in |
+| `spark_supervisor_memory_reserved_bytes` | declared reservations; opt-in |
+| `spark_supervisor_leases` | lease count; opt-in |
+| `spark_supervisor_auto_evict` | 0 or 1; opt-in |
+| `spark_supervisor_ready_alias_count` | opt-in |
+| `spark_supervisor_lane_ready` | `lane`, `model`; 0 or 1 |
+| `spark_supervisor_lane_state` | `lane`, `model`, `state`; the current state is 1 |
+| `spark_supervisor_lane_reserved` | `lane`, `model` |
+| `spark_supervisor_lane_draining` | `lane`, `model` |
+| `spark_supervisor_lane_leases` | `lane`, `model` |
+| `spark_supervisor_lane_memory_declared_bytes` | `lane`, `model`; declared, not measured |
+| `spark_supervisor_lane_unit_found` | `lane`, `model` |
+| `spark_supervisor_lane_unit_check_error` | `lane`, `model` |
+| `spark_supervisor_lane_port` | `lane`, `model` |
+| `spark_supervisor_lane_priority` | `lane`, `model` |
+| `spark_supervisor_lane_elapsed_seconds` | `lane`, `model` |
+| `spark_supervisor_lane_fence_count` | `lane`, `model` |
+| `spark_supervisor_lane_identity` | `lane`, `model`, `kind`, `detail`; constant 1 |
+| `spark_engine_tokens_total` | **counter**, `engine`, `engine_port`, `model`, `direction` |
+| `spark_engine_tokens_per_second` | `engine`, `engine_port`, `model`, `direction` |
+| `spark_engine_counter_reset_total` | **counter**, `engine`, `engine_port`, `model`, `direction` |
+| `spark_engine_endpoint_up` | `engine`, `engine_port`, `model`; constant 1 |
+| `spark_engine_requests_running` | `engine`, `engine_port`, `model` |
+| `spark_engine_requests_waiting` | `engine`, `engine_port`, `model` |
+| `spark_engine_generation_tokens_running` | `engine`, `engine_port`, `model` |
+| `spark_engine_kv_cache_usage_ratio` | `engine`, `engine_port`, `model`; 0 to 1 |
+| `spark_engine_time_to_first_token_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
+| `spark_engine_time_to_first_token_seconds_observations_total` | `engine`, `engine_port`, `model` |
+| `spark_engine_inter_token_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
+| `spark_engine_inter_token_seconds_observations_total` | `engine`, `engine_port`, `model` |
+| `spark_engine_prefill_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
+| `spark_engine_prefill_seconds_observations_total` | `engine`, `engine_port`, `model` |
+| `spark_engine_e2e_request_seconds_mean` | `engine`, `engine_port`, `model`; seconds |
+| `spark_engine_e2e_request_seconds_observations_total` | `engine`, `engine_port`, `model` |
+| `spark_engine_mtp_draft_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
+| `spark_engine_mtp_accepted_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
+| `spark_engine_spec_draft_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
+| `spark_engine_spec_accepted_tokens_total` | **counter**, `engine`, `engine_port`, `model` |
+| `spark_engine_speculation_acceptance_ratio` | `engine`, `engine_port`, `model`; 0 to 1 |
+| `spark_collector_success` | `collector`; 0 or 1 |
+| `spark_collector_duration_seconds` | `collector` |
+| `spark_collector_last_success_timestamp_seconds` | `collector`; Unix seconds, 0 means none yet |
 
 Collector names are `gpu`, `gpu_processes`, `memory`, `thermal`, `cpu`, `nvme`,
 `nics`, `rdma`, `ethtool`, `block_devices`, `usb`, `external_filesystems`, and
@@ -398,7 +448,7 @@ The build itself runs offline and the package ships those bytes untouched.
 `NODE_EXPORTER_ARCHIVE=/path/to/tarball` prepares from a local archive.
 
 The artifact lands in the parent directory as
-`spark-exporter_0.1.1-1_arm64.deb`. The bundled binary is architecture-specific,
+`spark-exporter_0.1.2-1_arm64.deb`. The bundled binary is architecture-specific,
 so build on the target architecture or in a configured cross-build environment.
 
 ## Tests
@@ -411,22 +461,25 @@ The suite covers missing-data semantics, RDMA units and partial failure, NIC
 metadata without RDMA, raw driver statistics, PCIe fields, block-device and USB
 attribution, external mount detection, engine rate and reset behaviour, bind
 address validation, resource closure, byte-preserved histograms, private node
-merging, proxy isolation and single-flight discovery.
-`--root /path/to/fixture` points the collectors at a fixture `proc/` and `sys/`
-tree, and the command and HTTP callables are injectable.
+merging, proxy isolation and single-flight discovery. `--root /path/to/fixture`
+points the collectors at a fixture `proc/` and `sys/` tree, and the command and
+HTTP callables are injectable.
 
-Continuous integration runs the suite on x86-64 and arm64 across supported
-Python versions, then builds the Debian package, installs it, scrapes the live
-endpoint, and purges it to confirm cleanup.
+Continuous integration runs the suite on x86-64 and arm64 across supported Python
+versions, then builds the Debian package, installs it, scrapes the live endpoint
+and purges it to confirm cleanup. Tagging a release builds both architectures,
+attests provenance, and publishes the packages with a `SHA256SUMS` file.
 
 ## References
 
+- [NVIDIA DGX Spark and GB10 specifications](https://www.nvidia.com/en-us/products/workstations/dgx-spark/)
 - [NVIDIA System Management Interface](https://docs.nvidia.com/deploy/nvidia-smi/index.html)
 - [Linux meminfo](https://docs.kernel.org/filesystems/proc.html)
 - [Linux network interface sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-net)
 - [Linux PCI sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-bus-pci)
 - [Linux block device sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-block)
 - [Linux USB sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-bus-usb)
+- [Linux thermal sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-thermal)
 - [Linux network statistics and ethtool](https://docs.kernel.org/networking/statistics.html)
 - [Linux InfiniBand sysfs ABI](https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-class-infiniband)
 - [Prometheus node_exporter](https://github.com/prometheus/node_exporter)
