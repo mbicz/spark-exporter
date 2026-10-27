@@ -3,6 +3,12 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, for example v0.1.1
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,9 +21,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
       - name: Compare tag and changelog version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_ENV"
           # debian/changelog carries a Debian revision; the tag names the
           # upstream version only.
           changelog=$(dpkg-parsechangelog --show-field Version)
@@ -42,6 +53,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -99,6 +112,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -126,6 +141,7 @@ jobs:
           esac
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: Spark Exporter ${{ env.version }}
           body_path: notes.txt
           prerelease: ${{ env.prerelease == 'true' }}
